@@ -1,0 +1,508 @@
+#!/bin/sh
+
+#projekt vypracovala
+#Movsesian Lilit
+#xmovse00
+
+
+export POSIXLY=CORRECT=yes
+export LC_ALL=C
+
+PRIKAZ=""
+FILTRY_SKUPIN=0
+PO_DATU=1
+PRED_DATEM=1
+PODADRESARE=1
+adresar=$(pwd)
+ADRESARE_LOG=1
+
+
+
+#Vypsani napovedy
+#if [ "$1" = "-h" ] && [ "$#" -eq 1 ]; then
+vypsani_napovedy()
+{
+	echo "		mole je wrapper skript pro efektivni pouziti textoveho editoru."
+	echo ""
+	echo "	    POUZITI:"
+	echo "		mole -h"
+	echo "		mole [-g GROUP] FILE"
+	echo "		mole [-m] [FILTERS] [DIRECTORY]"
+	echo "		mole list [FILTERS] [DIRECTORY]"
+	echo ""
+	echo "		-h	      			Zobrazi tuto napovedu"
+	echo "		[-g GROUP]      			Priradi otevreny soubor do zadane skupiny"
+	echo "		[-m]	      			Vybere soubor, ktery byl pomoci skriptu otevren nejcasteji"
+	echo ""
+	echo "		FILE	      			Otevre zadany soubor"
+	echo "		[FILTERS][DIRECTORY]   		Vybere soubor podle filtru v zadanem adresari (aktualnim, pokud adresar neni zadan)"
+	echo "		list	      			Zobrazi seznam souboru, ktere byly v danem adresari otevreny/editovany pomoci skriptu"
+	echo ""
+	echo "	    FILTRY:"
+	echo "		[-g GROUP1[,GROUP2[,...]]] 	Zobrazi pouze soubory v zadane skupine/skupinach"
+	echo "		[-a DATE] 			Zobrazi pouze soubory otevrene po tomto datu"
+	echo "		[-b DATE] 			Zobrazi pouze soubory otevrene pred timto datem"
+	echo ""
+	echo "	    POZNAMKY:"
+	echo "		Skript spusti editor nastaveny v promenne EDITOR (Nebo VISUAL, pokud"
+	echo "		EDITOR neni nastaven). Pokud neni nastaveno ani jedno, pouziva se vi"
+}
+
+
+
+editace_souboru()
+{
+	$1 "$2"
+	adresa_souboru=$(readlink -f "$2")
+	jmeno_souboru=$(echo "$2" | rev | cut -d "/" -f1 | rev)
+	printf '%s|%s|%s|%s|%s\n' "$jmeno_souboru" "$(date '+%Y-%m-%d_%H-%M-%S')" "$1" "$adresa_souboru" "$3">>"$MOLE_RC"
+}
+
+
+#Overeni promenne MOLE_RC
+if [ -z "$MOLE_RC" ]; then 
+	echo "Chyba: promenna MOLE_RC neni nastavena.">&2
+	exit 1
+fi
+#Vytvoreni souboru MOLE_RC v pripade, ze na danne ceste soubor neexistje
+if [ ! -f "$MOLE_RC" ]; then
+	mkdir -p "$(dirname "MOLE_RC")"
+	touch "$MOLE_RC"
+	chmod 777 "$MOLE_RC"
+fi
+
+#Overeni, jestli do MOLE_RC lze zapisovat
+if [ ! -w "$MOLE_RC" ]; then
+	echo "Chyba: do MOLE_RC nelze zapisovat.">&2
+	exit 2
+fi
+
+
+#Nastaveni vychoziho editoru
+if [ -z "$EDITOR" ]; then
+	if [ -z "$VISUAL" ]; then
+		EDITOR="vi"
+	else
+		EDITOR="$VISUAL"
+	fi
+fi
+
+
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	
+	-h)
+		vypsani_napovedy
+		exit 0;;
+		
+	-m) 
+		PRIKAZ="nejcastejsi"
+		shift;;
+		
+	secret-log)
+		PRIKAZ="tajny_log"
+		shift;;
+		
+	list) 
+		PRIKAZ="seznam"
+		shift;;
+		
+	-g)
+		jmeno_skupiny="$2"
+		shift;;
+		
+	-a)
+		jenom_po_datu="$2"
+		jenom_po_datu=$(date -d "$jenom_po_datu" '+%Y-%m-%d')
+		PO_DATU=0
+		shift;;
+		
+	-b)	
+		jenom_pred_datem="$2"
+		jenom_pred_datem=$(date -d "$jenom_pred_datem" '+%Y-%m-%d')
+		PRED_DATEM=0
+		shift;;
+		
+	-r)
+		PODADRESARE=0
+		shift;;
+		
+	*) if [ -d "$1" ]; then
+		if [ "$PRIKAZ" = "tajny_log" ]; then
+			adresare="$adresare $1"
+			ADRESARE_LOG=0
+		else
+			adresar=$(readlink -f "$1")
+		fi
+		
+	   elif [ -f "$1" ]; then
+	   	PRIKAZ="editace"
+	   	FILTRY_SKUPIN=1
+	   	file="$1"
+	   fi
+	   shift;;
+	   
+	esac
+done
+
+
+
+if [ "$FILTRY_SKUPIN" -eq 0 ]; then
+ 	filtry_skupin=$(echo "$jmeno_skupiny" | tr ',' '|')
+fi
+
+
+
+case "$PRIKAZ" in
+
+
+editace)
+
+
+	editace_souboru "$EDITOR" "$file" "$jmeno_skupiny";;
+	
+	
+seznam)
+
+
+	#Skript prochazi MOLE_RC a sbira unikatni soubory, 
+	#filtruje soubory podle skupin a dat v pripade nastavenych filtru, v pripade 
+	#nastaveneho adresare hleda soubory jenom v danem adresari, jinak v aktualnim
+	#Tady a dale trochu zbytecne opakuju stejne kod pro ruzne pripady argumentu
+	#na lepsi implementaci jsem nemela cas
+
+	#v pripade argumentu -r hledam v MOLE_RC adresar jako substing "adresar/",
+	#takove primitivni reseni filtruje vsechny soubory v tomto adresari, ulozene 
+	#bud primo v adresari, nebo v nejakem z vnitrnich
+	#v pripade, ze -r neni zadan, skript konkatenuje adresar s "/jmeno", reseni
+	#dovoluje najit soubory jenom v zadanem adresari   
+
+	while IFS='|' read -r jmeno datum editor adresa skupina; do
+		if [ "$PODADRESARE" -eq 0 ]; then
+			if [ "$(echo "$adresa" | grep -q "${adresar}/"; echo $?)" -eq 0 ]; then 
+ 				if [ "$FILTRY_SKUPIN" -eq 0 ]; then
+					if ! echo "$skupina" | grep -qE "$filtry_skupin"; then
+						continue
+    					fi
+				fi
+				if [ "$PO_DATU" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -le "$(date -d "$jenom_po_datu" +%s)" ]; then
+						continue
+    					fi
+				fi
+				if [ "$PRED_DATEM" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -ge "$(date -d "$jenom_pred_datem" +%s)" ]; then		
+						continue
+    					fi
+				fi
+				if ! echo "$seznam" | grep -q "^$adresa$"; then
+					seznam="$seznam$adresa
+"
+				fi			
+			fi
+		
+		else
+			cesta="${adresar}/$jmeno"
+  			if echo "$adresa" | grep -qxF "$cesta"; then   
+ 				if [ "$FILTRY_SKUPIN" -eq 0 ]; then
+					if ! echo "$skupina" | grep -qE "$filtry_skupin"; then
+						continue
+    					fi
+				fi
+				if [ "$PO_DATU" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -le "$(date -d "$jenom_po_datu" +%s)" ]; then
+						continue
+    					fi
+				fi
+				if [ "$PRED_DATEM" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -ge "$(date -d "$jenom_pred_datem" +%s)" ]; then		
+						continue
+    					fi
+				fi
+				if ! echo "$seznam" | grep -q "^$adresa$"; then
+					seznam="$seznam$adresa
+"
+				fi			
+			fi
+		fi
+	done < "$MOLE_RC"
+	
+	#v tomto miste prochazim $MOLE_RC podruhe a sbiram vsechny zaznamy o souborech, ktere uz 
+	#jsou v promenne seznam, bez tohoto cyklu muj skript by obcas nefungoval. Napriklad v
+	#pripade, kdyby bylo nastaveno ohraniceni -a 2023-03-10, ale v MOLE_RC je otevreni souboru 
+	#a zarazeni do skupiny grp1 2020-01-10, tato skupina by nebyla v stdout
+	
+	while IFS='|' read -r jmeno datum editor adresa skupina; do
+		if ! echo "$seznam" | grep -q "^$adresa$:.* $skupina\$"; then
+			skupiny="$skupiny$jmeno:$skupina
+"
+		fi
+	done < "$MOLE_RC"
+
+	#lexikograficky serazeni souboru a odstraneni chybneho radku
+	#chybou tady je, ze od te doby se program uz nepocita se stejnym nazvem,
+	#ale jinym souborem, na lepsi reseni jsem neprisla
+	
+	seznam=$(echo "$seznam" | sed '$d' | rev | cut -d "/" -f1 | rev | sort)
+	
+	if [ -z "$seznam" ]; then
+		echo "Zadny soubor nevyhovuje zadanym filtrum.">&2
+		exit 5
+	fi
+
+	#Cyklus pro vypsani souboru s unikatnimi skupinami a zarovnanim
+	#muj kod produkoval extra carku pred prvni skupinou, a proto jsem pouzila sed
+	echo "$seznam" | while read -r file; do
+		printf '%s:%*s' "$file" "$((25 - ${#file}))" ""
+		seznam_se_skupinami=$(echo "$skupiny" | grep "^$file:" | cut -d ':' -f2 | sort -u)  
+		if [ -z "$seznam_se_skupinami" ]; then
+			echo "-"
+		else 
+			printf '%s\n' "$seznam_se_skupinami" | tr '\n' ',' | sed 's/,$/\n/' | sed 's/^,//' 
+		fi
+	done ;;
+	
+	
+tajny_log)	
+	
+	
+	#na zacatku modifikuji promennou adresare, pripadne rozdeluji do samostatnych
+	#slozek, pridavam slash na konec
+	
+	
+	#pak prochazim MOLE_RC stejne jako v ostatnich castech skriptu, filtruji 
+	#podle nastavenych filtru a zapisuji do promenne filtrovane
+	
+	#rozdilem je, ze volani tajneho logu bez adresare musi vest k vypsani vsech 
+	#souboru v MOLE_RC
+
+	#stejne jako v seznamu vyresila jsem problem argumentu -r stejnym mechanismem, 
+	#jenom pocitam s tim, ze v tajnem logu muze byt vic adresaru, nez jeden
+	
+	if [ "$ADRESARE_LOG" -eq 0 ]; then
+			#adresare=$(echo "$adresare" | sed 's/^ //' | tr ' ' '| ' ) #| tr ' ' '\n' | sed 's/$/\//' ) #| tr '\n' ' '| tr -d ' ')
+			
+			adresare="${adresare# }"
+			adresare="$(echo "$adresare" | sed 's/ /\/|/g;s/$/\//')"
+			adresare="/$adresare"
+			adresare="$(expr "$adresare" : '.\(.*\)')"
+	fi
+	
+	while IFS='|' read -r jmeno datum editor adresa skupina; do  
+	
+		if [ "$ADRESARE_LOG" -eq 0 ]; then
+			
+			if [ "$PODADRESARE" -eq 0 ]; then
+				if ! echo "$adresa" | grep -qE "$adresare"; then
+					continue
+    				fi
+    			else
+    				unset nove_adresare
+    				for cesta in $(echo "$adresare" | tr '|' '\n'); do
+    					nova_cesta="$cesta$jmeno"
+    					nove_adresare="$nove_adresare$nova_cesta|"
+    				done
+    				nove_adresare=${nove_adresare%|}
+    				if ! echo "$adresa" | grep -qE "$nove_adresare"; then 
+    					continue
+    				fi
+    			fi
+		fi
+  		if [ "$PO_DATU" -eq 0 ]; then
+  			d1=$(echo "$datum" | cut -d "_" -f1)
+  			d1=$(date -d "$d1" '+%Y-%m-%d')
+			if [ "$(date -d "$d1" +%s)" -le "$(date -d "$jenom_po_datu" +%s)" ]; then
+				continue
+    			fi
+		fi
+		if [ "$PRED_DATEM" -eq 0 ]; then
+			d1=$(echo "$datum" | cut -d "_" -f1)
+			d1=$(date -d "$d1" '+%Y-%m-%d')
+			if [ "$(date -d "$d1" +%s)" -ge "$(date -d "$jenom_pred_datem" +%s)" ]; then		
+				continue
+    			fi
+		fi
+		if ! echo "$filtrovane" | grep -q "^$adresa$"; then
+			filtrovane="$filtrovane$adresa|$datum			
+"
+		fi
+		
+  	done< "$MOLE_RC"
+	upravy=$(echo "$filtrovane" | sed '$d')
+
+	#muj cyklus produkuje jeden prazdny radek
+	filtrovane=$(echo "$filtrovane" | sed '$d' | cut -d "|" -f1 | sort | uniq)
+	
+	if [ -z "$filtrovane" ]; then
+		echo "Zadny soubor nevyhovuje zadanym filtrum.">&2
+		exit 6
+	fi
+	
+	#Vytvoreni adresare pro tajny log
+	adr="$HOME/.mole"
+	if [ ! -d "$adr" ]; then
+		mkdir -p "$adr"
+	fi
+	
+	#Vytvoreni secret log
+	TAJNY_LOG_FILE="log_$(whoami)_$(date '+%Y-%m-%d_%H-%M-%S')"
+	TAJNY_LOG_PATH="$HOME/.mole/$TAJNY_LOG_FILE"
+	
+	echo "$filtrovane" | while read -r file; do
+		printf '%s;' "$file">>"$TAJNY_LOG_PATH"
+		seznam_s_upravami=$(echo "$upravy" | grep "^$file|" | cut -d '|' -f2)  
+		daty=$(echo "$seznam_s_upravami" | paste -sd ';' - | tr -d '\t')
+		printf '%s\n' "$daty">>"$TAJNY_LOG_PATH" 
+	done
+	bzip2 -z "$TAJNY_LOG_PATH"
+	;;
+
+
+*)	
+
+
+	while IFS='|' read -r jmeno datum editor adresa skupina; do
+		if [ "$PODADRESARE" -eq 0 ]; then
+  			if [ "$(echo "$adresa" | grep -q "${adresar}/"; echo $?)" -eq 0 ]; then   
+ 				if [ "$FILTRY_SKUPIN" -eq 0 ]; then
+					if ! echo "$skupina" | grep -qE "$filtry_skupin"; then
+						continue
+    					fi
+				fi
+				if [ "$PO_DATU" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -le "$(date -d "$jenom_po_datu" +%s)" ]; then
+						continue
+    					fi
+				fi
+				if [ "$PRED_DATEM" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -ge "$(date -d "$jenom_pred_datem" +%s)" ]; then		
+						continue
+    					fi
+				fi
+				if ! echo "$filtrovane" | grep -q "^$adresa$"; then
+					filtrovane="$filtrovane$jmeno|$datum|$editor|$adresa|$skupina			
+"	
+				fi
+			fi
+		else
+			cesta="${adresar}/$jmeno"
+  			if echo "$adresa" | grep -qxF "$cesta"; then  
+  				if [ "$FILTRY_SKUPIN" -eq 0 ]; then
+					if ! echo "$skupina" | grep -qE "$filtry_skupin"; then
+						continue
+    					fi
+				fi
+				if [ "$PO_DATU" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -le "$(date -d "$jenom_po_datu" +%s)" ]; then
+						continue
+    					fi
+				fi
+				if [ "$PRED_DATEM" -eq 0 ]; then
+					d1=$(echo "$datum" | cut -d "_" -f1)
+					d1=$(date -d "$d1" '+%Y-%m-%d')
+					if [ "$(date -d "$d1" +%s)" -ge "$(date -d "$jenom_pred_datem" +%s)" ]; then		
+						continue
+    					fi
+				fi
+				if ! echo "$filtrovane" | grep -q "^$adresa$"; then
+					filtrovane="$filtrovane$jmeno|$datum|$editor|$adresa|$skupina			
+"	
+				fi
+			fi
+  			
+		fi
+	done < "$MOLE_RC"
+	
+	if [ -z "$filtrovane" ]; then
+		echo "Zadny soubor nevyhovuje zadanym filtrum.">&2
+		exit 7
+	fi
+	
+	#zase muj cyklus produkuje jeden prazdny radek
+	filtrovane=$(echo "$filtrovane" | sed '$d')
+
+	#rozhodla jsem pro toto reseni i presto ze mam "case" proto, abych nepsala dvakrat 
+	#stejny filtracni kod pro preponu -m a otevreni posledniho editovaneho souboru
+
+	if [ "$PRIKAZ" = "nejcastejsi" ]; then
+	
+		#timto pipelinem hledam nejcasteji otevreny soubor a volam editacni funkce
+		
+			file=$(echo "$filtrovane" | cut -d "|" -f4 | sort | uniq -c | sort -nr | head -1 | awk '{print $2}')
+			if [ -f "$file" ]; then
+				editace_souboru "$EDITOR" "$file"
+			else
+				echo "Zadny soubor nemuze byt otevren.">&2
+				exit 3
+			fi
+
+	else
+	
+	#v tomto pripade budeme editovat posledni editovany soubor
+	
+			file=$(echo "$filtrovane" | tail -1 | cut -d "|" -f4)
+			if [ -f "$file" ]; then
+				editace_souboru "$EDITOR" "$file"
+			else
+				echo "Zadny soubor nemuze byt otevren.">&2
+				exit 4
+			fi
+	fi
+	
+	;;	
+esac
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
